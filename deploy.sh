@@ -10,7 +10,7 @@ set -e
 RESOURCE_GROUP="${1:-rg-containerapp-storage}"
 CONTAINERAPP_LOCATION="${2:-eastus}"
 STORAGE_LOCATION="${3:-westus}"
-DOCKER_IMAGE="${4:-nginx:latest}"
+DOCKER_IMAGE="mcr.microsoft.com/azurelinux/base/nginx:1.25"
 FILE_SHARE_NAME="applogs"
 DEPLOYMENT_NAME="deployment-$(date +%s)"
 
