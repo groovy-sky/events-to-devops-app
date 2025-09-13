@@ -1,0 +1,131 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "description": "ARM template for Container App with mounted Azure File Share",
+    "author": "groovy-sky"
+  },
+  "parameters": {
+    "resourceGroupName": {
+      "type": "string",
+      "metadata": {
+        "description": "Name of the resource group"
+      }
+    },
+    "location": {
+      "type": "string",
+      "metadata": {
+        "description": "Location for Container App"
+      }
+    },
+    "dockerImage": {
+      "type": "string",
+      "defaultValue": "nginx:latest",
+      "metadata": {
+        "description": "Docker image to deploy"
+      }
+    },
+    "storageAccountName": {
+      "type": "string",
+      "metadata": {
+        "description": "Name of the Storage Account"
+      }
+    },
+    "fileShareName": {
+      "type": "string",
+      "metadata": {
+        "description": "Name of the file share"
+      }
+    }
+  },
+  "variables": {
+    "containerAppEnvName": "[concat('cae-', parameters('resourceGroupName'))]",
+    "containerAppName": "[concat('ca-', parameters('resourceGroupName'))]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.App/containerApps",
+      "apiVersion": "2023-05-01",
+      "name": "[variables('containerAppName')]",
+      "location": "[parameters('location')]",
+      "identity": {
+        "type": "SystemAssigned"
+      },
+      "properties": {
+        "managedEnvironmentId": "[resourceId('Microsoft.App/managedEnvironments', variables('containerAppEnvName'))]",
+        "configuration": {
+          "ingress": {
+            "external": true,
+            "targetPort": 80,
+            "transport": "http",
+            "allowInsecure": false
+          },
+          "volumes": [
+            {
+              "name": "app-storage-volume",
+              "storageType": "AzureFile",
+              "storageName": "appstorage"
+            }
+          ]
+        },
+        "template": {
+          "containers": [
+            {
+              "name": "main-container",
+              "image": "[parameters('dockerImage')]",
+              "resources": {
+                "cpu": 0.5,
+                "memory": "1Gi"
+              },
+              "volumeMounts": [
+                {
+                  "volumeName": "app-storage-volume",
+                  "mountPath": "/mnt/storage"
+                }
+              ],
+              "env": [
+                {
+                  "name": "STORAGE_MOUNT_PATH",
+                  "value": "/mnt/storage"
+                },
+                {
+                  "name": "STORAGE_ACCOUNT",
+                  "value": "[parameters('storageAccountName')]"
+                },
+                {
+                  "name": "FILE_SHARE",
+                  "value": "[parameters('fileShareName')]"
+                },
+                {
+                  "name": "UPDATED_AT",
+                  "value": "[utcNow()]"
+                }
+              ],
+              "command": [
+                "/bin/sh"
+              ],
+              "args": [
+                "-c",
+                "echo 'Storage mounted at $(date)' > /mnt/storage/mount-status.txt && echo 'Container started successfully' >> /mnt/storage/mount-status.txt && exec nginx -g 'daemon off;'"
+              ]
+            }
+          ],
+          "scale": {
+            "minReplicas": 1,
+            "maxReplicas": 3
+          }
+        }
+      }
+    }
+  ],
+  "outputs": {
+    "containerAppUrl": {
+      "type": "string",
+      "value": "[concat('https://', reference(resourceId('Microsoft.App/containerApps', variables('containerAppName')), '2023-05-01').configuration.ingress.fqdn)]"
+    },
+    "mountPath": {
+      "type": "string",
+      "value": "/mnt/storage"
+    }
+  }
+}
