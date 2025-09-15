@@ -77,15 +77,26 @@ az deployment group create \
     currentUserIp=$MY_IP \
   --output none
 
-# Get storage key separately
-STORAGE_KEY=$(az deployment group show \
-  --name "${DEPLOYMENT_NAME}-storage" \
+# Wait for storage account to be fully provisioned
+echo "  ⏳ Waiting for storage account to be ready..."
+sleep 5
+
+# Get storage key directly from the storage account instead of deployment output
+STORAGE_KEY=$(az storage account keys list \
   --resource-group $RESOURCE_GROUP \
-  --query 'properties.outputs.storageAccountKey.value' -o tsv)
+  --account-name $STORAGE_ACCOUNT_NAME \
+  --query '[0].value' -o tsv)
+
+# Verify we got the key
+if [ -z "$STORAGE_KEY" ]; then
+  echo "  ✗ Failed to retrieve storage account key"
+  exit 1
+fi
 
 echo "  ✓ Storage Account deployed"
 echo "  ✓ File share created"
 echo "  ✓ IPs whitelisted: $CONTAINER_APP_OUTBOUND_IP, $MY_IP"
+echo "  ✓ Storage key retrieved"
 
 # Step 4: Configure Environment Storage
 echo "[4/5] Configuring storage in Container Apps environment..."
