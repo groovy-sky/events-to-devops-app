@@ -45,21 +45,15 @@ az deployment group create \
     dockerImage=$DOCKER_IMAGE \
   --output none
 
-# Get outputs
-MANAGED_IDENTITY_PRINCIPAL_ID=$(az deployment group show \
+# Get outputs - fetch all at once to avoid multiple calls
+DEPLOYMENT_OUTPUT=$(az deployment group show \
   --name "${DEPLOYMENT_NAME}-containerapp" \
   --resource-group $RESOURCE_GROUP \
-  --query properties.outputs.managedIdentityPrincipalId.value -o tsv)
+  --query 'properties.outputs' -o json)
 
-CONTAINER_APP_OUTBOUND_IP=$(az deployment group show \
-  --name "${DEPLOYMENT_NAME}-containerapp" \
-  --resource-group $RESOURCE_GROUP \
-  --query properties.outputs.containerAppOutboundIp.value -o tsv)
-
-CONTAINER_APP_ENV_NAME=$(az deployment group show \
-  --name "${DEPLOYMENT_NAME}-containerapp" \
-  --resource-group $RESOURCE_GROUP \
-  --query properties.outputs.containerAppEnvName.value -o tsv)
+MANAGED_IDENTITY_PRINCIPAL_ID=$(echo "$DEPLOYMENT_OUTPUT" | jq -r '.managedIdentityPrincipalId.value')
+CONTAINER_APP_OUTBOUND_IP=$(echo "$DEPLOYMENT_OUTPUT" | jq -r '.containerAppOutboundIp.value')
+CONTAINER_APP_ENV_NAME=$(echo "$DEPLOYMENT_OUTPUT" | jq -r '.containerAppEnvName.value')
 
 echo "  ✓ Container App deployed"
 echo "  ✓ Outbound IP: $CONTAINER_APP_OUTBOUND_IP"
@@ -69,6 +63,7 @@ echo "  ✓ Managed Identity ID: $MANAGED_IDENTITY_PRINCIPAL_ID"
 echo "[3/5] Deploying Storage Account with IP whitelist..."
 MY_IP=$(curl -s ifconfig.me)
 
+# Deploy storage account
 az deployment group create \
   --name "${DEPLOYMENT_NAME}-storage" \
   --resource-group $RESOURCE_GROUP \
@@ -82,10 +77,11 @@ az deployment group create \
     currentUserIp=$MY_IP \
   --output none
 
+# Get storage key separately
 STORAGE_KEY=$(az deployment group show \
   --name "${DEPLOYMENT_NAME}-storage" \
   --resource-group $RESOURCE_GROUP \
-  --query properties.outputs.storageAccountKey.value -o tsv)
+  --query 'properties.outputs.storageAccountKey.value' -o tsv)
 
 echo "  ✓ Storage Account deployed"
 echo "  ✓ File share created"
@@ -119,10 +115,11 @@ az deployment group create \
     fileShareName=$FILE_SHARE_NAME \
   --output none
 
+# Get final URL
 FINAL_URL=$(az deployment group show \
   --name "${DEPLOYMENT_NAME}-final" \
   --resource-group $RESOURCE_GROUP \
-  --query properties.outputs.containerAppUrl.value -o tsv)
+  --query 'properties.outputs.containerAppUrl.value' -o tsv)
 
 echo "  ✓ Container App redeployed with storage"
 
