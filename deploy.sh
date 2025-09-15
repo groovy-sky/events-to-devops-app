@@ -63,7 +63,7 @@ main() {
     print_message "$YELLOW" "Deploying Container App Environment..."
     ENVIRONMENT_OUTPUT=$(az deployment group create \
         --resource-group "$RESOURCE_GROUP" \
-        --template-file "templates/container-deploy.json" \
+        --template-file "templates/container-app-env-deploy.json" \
         --parameters location="$LOCATION" \
         --query properties.outputs \
         --output json)
