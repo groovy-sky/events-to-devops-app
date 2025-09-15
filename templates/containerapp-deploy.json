@@ -1,10 +1,6 @@
 {
   "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
   "contentVersion": "1.0.0.0",
-  "metadata": {
-    "description": "ARM template for initial Container App deployment with managed identity",
-    "author": "groovy-sky"
-  },
   "parameters": {
     "resourceGroupName": {
       "type": "string",
@@ -15,41 +11,91 @@
     "location": {
       "type": "string",
       "metadata": {
-        "description": "Location for Container App resources"
+        "description": "Location for all resources"
       }
     },
     "dockerImage": {
       "type": "string",
-      "defaultValue": "nginx:latest",
       "metadata": {
         "description": "Docker image to deploy"
+      }
+    },
+    "currentTime": {
+      "type": "string",
+      "defaultValue": "[utcNow()]",
+      "metadata": {
+        "description": "Current UTC time used for unique naming"
       }
     }
   },
   "variables": {
     "containerAppEnvName": "[concat('cae-', parameters('resourceGroupName'))]",
-    "containerAppName": "[concat('ca-', parameters('resourceGroupName'))]"
+    "containerAppName": "[concat('ca-', parameters('resourceGroupName'))]",
+    "workspaceName": "[concat('log-', parameters('resourceGroupName'))]",
+    "appInsightsName": "[concat('appi-', parameters('resourceGroupName'))]",
+    "managedIdentityName": "[concat('mi-', parameters('resourceGroupName'))]"
   },
   "resources": [
+    {
+      "type": "Microsoft.ManagedIdentity/userAssignedIdentities",
+      "apiVersion": "2023-01-31",
+      "name": "[variables('managedIdentityName')]",
+      "location": "[parameters('location')]"
+    },
+    {
+      "type": "Microsoft.OperationalInsights/workspaces",
+      "apiVersion": "2021-12-01-preview",
+      "name": "[variables('workspaceName')]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "sku": {
+          "name": "PerGB2018"
+        },
+        "retentionInDays": 30
+      }
+    },
+    {
+      "type": "Microsoft.Insights/components",
+      "apiVersion": "2020-02-02",
+      "name": "[variables('appInsightsName')]",
+      "location": "[parameters('location')]",
+      "kind": "web",
+      "properties": {
+        "Application_Type": "web",
+        "WorkspaceResourceId": "[resourceId('Microsoft.OperationalInsights/workspaces', variables('workspaceName'))]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.OperationalInsights/workspaces', variables('workspaceName'))]"
+      ]
+    },
     {
       "type": "Microsoft.App/managedEnvironments",
       "apiVersion": "2023-05-01",
       "name": "[variables('containerAppEnvName')]",
       "location": "[parameters('location')]",
       "properties": {
-        "zoneRedundant": false
-      }
+        "appLogsConfiguration": {
+          "destination": "log-analytics",
+          "logAnalyticsConfiguration": {
+            "customerId": "[reference(resourceId('Microsoft.OperationalInsights/workspaces', variables('workspaceName')), '2021-12-01-preview').customerId]",
+            "sharedKey": "[listKeys(resourceId('Microsoft.OperationalInsights/workspaces', variables('workspaceName')), '2021-12-01-preview').primarySharedKey]"
+          }
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.OperationalInsights/workspaces', variables('workspaceName'))]"
+      ]
     },
     {
       "type": "Microsoft.App/containerApps",
       "apiVersion": "2023-05-01",
       "name": "[variables('containerAppName')]",
       "location": "[parameters('location')]",
-      "dependsOn": [
-        "[resourceId('Microsoft.App/managedEnvironments', variables('containerAppEnvName'))]"
-      ],
       "identity": {
-        "type": "SystemAssigned"
+        "type": "UserAssigned",
+        "userAssignedIdentities": {
+          "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('managedIdentityName'))]": {}
+        }
       },
       "properties": {
         "managedEnvironmentId": "[resourceId('Microsoft.App/managedEnvironments', variables('containerAppEnvName'))]",
@@ -57,29 +103,19 @@
           "ingress": {
             "external": true,
             "targetPort": 80,
-            "transport": "http",
+            "transport": "auto",
             "allowInsecure": false
           }
         },
         "template": {
           "containers": [
             {
-              "name": "main-container",
+              "name": "main",
               "image": "[parameters('dockerImage')]",
               "resources": {
                 "cpu": 0.5,
                 "memory": "1Gi"
-              },
-              "env": [
-                {
-                  "name": "DEPLOYED_AT",
-                  "value": "[utcNow()]"
-                },
-                {
-                  "name": "LOCATION",
-                  "value": "[parameters('location')]"
-                }
-              ]
+              }
             }
           ],
           "scale": {
@@ -87,33 +123,29 @@
             "maxReplicas": 3
           }
         }
-      }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.App/managedEnvironments', variables('containerAppEnvName'))]",
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('managedIdentityName'))]"
+      ]
     }
   ],
   "outputs": {
-    "containerAppName": {
+    "containerAppUrl": {
       "type": "string",
-      "value": "[variables('containerAppName')]"
-    },
-    "containerAppEnvName": {
-      "type": "string",
-      "value": "[variables('containerAppEnvName')]"
-    },
-    "managedIdentityPrincipalId": {
-      "type": "string",
-      "value": "[reference(resourceId('Microsoft.App/containerApps', variables('containerAppName')), '2023-05-01', 'full').identity.principalId]"
+      "value": "[concat('https://', reference(resourceId('Microsoft.App/containerApps', variables('containerAppName')), '2023-05-01').configuration.ingress.fqdn)]"
     },
     "containerAppOutboundIp": {
       "type": "string",
       "value": "[reference(resourceId('Microsoft.App/managedEnvironments', variables('containerAppEnvName')), '2023-05-01').staticIp]"
     },
-    "containerAppFqdn": {
+    "managedIdentityPrincipalId": {
       "type": "string",
-      "value": "[reference(resourceId('Microsoft.App/containerApps', variables('containerAppName')), '2023-05-01').configuration.ingress.fqdn]"
+      "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('managedIdentityName')), '2023-01-31').principalId]"
     },
-    "containerAppEnvironmentId": {
+    "containerAppEnvName": {
       "type": "string",
-      "value": "[resourceId('Microsoft.App/managedEnvironments', variables('containerAppEnvName'))]"
+      "value": "[variables('containerAppEnvName')]"
     }
   }
 }
