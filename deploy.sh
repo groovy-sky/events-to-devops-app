@@ -1,156 +1,176 @@
 #!/bin/bash
-set -e
 
 # Script: deploy.sh
-# Description: Main deployment script for Container App with Storage Account
+# Description: Deploy Azure resources for events-to-devops-app
 # Author: groovy-sky
-# Date: 2025-01-13
 
-# Configuration
-RESOURCE_GROUP="${1:-rg-containerapp-storage}"
-CONTAINERAPP_LOCATION="${2:-eastus}"
-STORAGE_LOCATION="${3:-westus}"
-DOCKER_IMAGE="mcr.microsoft.com/azurelinux/base/nginx:1.25"
-FILE_SHARE_NAME="applogs"
-DEPLOYMENT_NAME="deployment-$(date +%s)"
+set -e  # Exit on error
 
-# Generate names from resource group
-CONTAINERAPP_ENV_NAME="cae-${RESOURCE_GROUP}"
-CONTAINERAPP_NAME="ca-${RESOURCE_GROUP}"
-STORAGE_ACCOUNT_NAME="st${RESOURCE_GROUP//[-_]/}$RANDOM"
-STORAGE_ACCOUNT_NAME=$(echo "${STORAGE_ACCOUNT_NAME:0:24}" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]//g')
+# Color codes for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m' # No Color
 
-echo "=========================================="
-echo "Deployment Configuration:"
-echo "Resource Group: $RESOURCE_GROUP"
-echo "Container App Location: $CONTAINERAPP_LOCATION"
-echo "Storage Location: $STORAGE_LOCATION"
-echo "Docker Image: $DOCKER_IMAGE"
-echo "Storage Account: $STORAGE_ACCOUNT_NAME"
-echo "=========================================="
+# Function to print colored output
+print_message() {
+    local color=$1
+    local message=$2
+    echo -e "${color}${message}${NC}"
+}
 
-# Step 1: Create Resource Group
-echo "[1/5] Creating resource group..."
-az group create --name $RESOURCE_GROUP --location $CONTAINERAPP_LOCATION --output none
+# Function to check if resource group exists
+check_resource_group() {
+    local rg_name=$1
+    az group show --name "$rg_name" &>/dev/null
+}
 
-# Step 2: Deploy Container App
-echo "[2/5] Deploying Container App with managed identity..."
-az deployment group create \
-  --name "${DEPLOYMENT_NAME}-containerapp" \
-  --resource-group $RESOURCE_GROUP \
-  --template-file templates/containerapp-deploy.json \
-  --parameters \
-    resourceGroupName=$RESOURCE_GROUP \
-    location=$CONTAINERAPP_LOCATION \
-    dockerImage=$DOCKER_IMAGE \
-  --output none
+# Function to get current user's public IP
+get_current_ip() {
+    curl -s https://api.ipify.org || echo ""
+}
 
-# Get outputs - fetch all at once to avoid multiple calls
-DEPLOYMENT_OUTPUT=$(az deployment group show \
-  --name "${DEPLOYMENT_NAME}-containerapp" \
-  --resource-group $RESOURCE_GROUP \
-  --query 'properties.outputs' -o json)
+# Main deployment
+main() {
+    print_message "$GREEN" "Starting Azure deployment for events-to-devops-app..."
+    
+    # Check for required parameters
+    if [ -z "$1" ]; then
+        print_message "$RED" "Error: Resource group name is required"
+        echo "Usage: $0 <resource-group-name> [location]"
+        exit 1
+    fi
+    
+    RESOURCE_GROUP=$1
+    LOCATION=${2:-"eastus"}
+    CURRENT_IP=$(get_current_ip)
+    
+    print_message "$YELLOW" "Configuration:"
+    echo "  Resource Group: $RESOURCE_GROUP"
+    echo "  Location: $LOCATION"
+    echo "  Current IP: ${CURRENT_IP:-Not detected}"
+    
+    # Create resource group if it doesn't exist
+    if ! check_resource_group "$RESOURCE_GROUP"; then
+        print_message "$YELLOW" "Creating resource group..."
+        az group create --name "$RESOURCE_GROUP" --location "$LOCATION"
+        print_message "$GREEN" "Resource group created successfully"
+    else
+        print_message "$YELLOW" "Resource group already exists"
+    fi
+    
+    # Deploy Container App Environment
+    print_message "$YELLOW" "Deploying Container App Environment..."
+    ENVIRONMENT_OUTPUT=$(az deployment group create \
+        --resource-group "$RESOURCE_GROUP" \
+        --template-file "templates/container-app-env-deploy.json" \
+        --parameters location="$LOCATION" \
+        --query properties.outputs \
+        --output json)
+    
+    ENVIRONMENT_NAME=$(echo "$ENVIRONMENT_OUTPUT" | jq -r '.environmentName.value')
+    ENVIRONMENT_ID=$(echo "$ENVIRONMENT_OUTPUT" | jq -r '.environmentId.value')
+    OUTBOUND_IP=$(echo "$ENVIRONMENT_OUTPUT" | jq -r '.outboundIp.value')
+    
+    print_message "$GREEN" "Container App Environment deployed successfully"
+    echo "  Environment Name: $ENVIRONMENT_NAME"
+    echo "  Outbound IP: $OUTBOUND_IP"
+    
+    # Deploy Container App
+    print_message "$YELLOW" "Deploying Container App..."
+    APP_OUTPUT=$(az deployment group create \
+        --resource-group "$RESOURCE_GROUP" \
+        --template-file "templates/container-app-deploy.json" \
+        --parameters \
+            location="$LOCATION" \
+            environmentId="$ENVIRONMENT_ID" \
+        --query properties.outputs \
+        --output json)
+    
+    APP_NAME=$(echo "$APP_OUTPUT" | jq -r '.appName.value')
+    APP_URL=$(echo "$APP_OUTPUT" | jq -r '.appUrl.value')
+    IDENTITY_ID=$(echo "$APP_OUTPUT" | jq -r '.managedIdentityPrincipalId.value')
+    
+    print_message "$GREEN" "Container App deployed successfully"
+    echo "  App Name: $APP_NAME"
+    echo "  App URL: $APP_URL"
+    
+    # Deploy Storage Account
+    print_message "$YELLOW" "Deploying Storage Account..."
+    STORAGE_OUTPUT=$(az deployment group create \
+        --resource-group "$RESOURCE_GROUP" \
+        --template-file "templates/storage-deploy.json" \
+        --parameters \
+            location="$LOCATION" \
+            containerAppOutboundIp="$OUTBOUND_IP" \
+            managedIdentityPrincipalId="$IDENTITY_ID" \
+            currentUserIp="${CURRENT_IP}" \
+        --query properties.outputs \
+        --output json)
+    
+    STORAGE_ACCOUNT_NAME=$(echo "$STORAGE_OUTPUT" | jq -r '.storageAccountName.value')
+    FILE_SHARE_NAME=$(echo "$STORAGE_OUTPUT" | jq -r '.fileShareName.value')
+    
+    print_message "$GREEN" "Storage Account deployed successfully"
+    echo "  Storage Account Name: $STORAGE_ACCOUNT_NAME"
+    echo "  File Share Name: $FILE_SHARE_NAME"
+    
+    # Get storage account key for mounting
+    print_message "$YELLOW" "Retrieving storage account key..."
+    STORAGE_KEY=$(az storage account keys list \
+        --resource-group "$RESOURCE_GROUP" \
+        --account-name "$STORAGE_ACCOUNT_NAME" \
+        --query "[0].value" \
+        --output tsv)
+    
+    # Update Container App with storage mount
+    print_message "$YELLOW" "Updating Container App with storage mount..."
+    az containerapp update \
+        --name "$APP_NAME" \
+        --resource-group "$RESOURCE_GROUP" \
+        --set-env-vars \
+            STORAGE_ACCOUNT_NAME="$STORAGE_ACCOUNT_NAME" \
+            FILE_SHARE_NAME="$FILE_SHARE_NAME" \
+        --query properties.configuration.ingress.fqdn \
+        --output tsv > /dev/null
+    
+    # Create storage mount
+    az containerapp env storage set \
+        --name "$ENVIRONMENT_NAME" \
+        --resource-group "$RESOURCE_GROUP" \
+        --storage-name "appstorage" \
+        --azure-file-account-name "$STORAGE_ACCOUNT_NAME" \
+        --azure-file-account-key "$STORAGE_KEY" \
+        --azure-file-share-name "$FILE_SHARE_NAME" \
+        --access-mode ReadWrite || true
+    
+    print_message "$GREEN" "Storage mount configured successfully"
+    
+    # Deploy Azure DevOps Integration (if template exists)
+    if [ -f "templates/devops-integration-deploy.json" ]; then
+        print_message "$YELLOW" "Deploying Azure DevOps Integration..."
+        az deployment group create \
+            --resource-group "$RESOURCE_GROUP" \
+            --template-file "templates/devops-integration-deploy.json" \
+            --parameters \
+                location="$LOCATION" \
+                containerAppName="$APP_NAME" \
+                storageAccountName="$STORAGE_ACCOUNT_NAME"
+        print_message "$GREEN" "Azure DevOps Integration deployed successfully"
+    fi
+    
+    # Final summary
+    print_message "$GREEN" "\n=== Deployment Complete ==="
+    echo "Resource Group: $RESOURCE_GROUP"
+    echo "Container App URL: https://$APP_URL"
+    echo "Storage Account: $STORAGE_ACCOUNT_NAME"
+    echo "File Share: $FILE_SHARE_NAME"
+    echo ""
+    print_message "$YELLOW" "Next steps:"
+    echo "1. Access your app at: https://$APP_URL"
+    echo "2. Configure Azure DevOps webhooks to point to your app"
+    echo "3. Monitor logs in the $FILE_SHARE_NAME file share"
+}
 
-MANAGED_IDENTITY_PRINCIPAL_ID=$(echo "$DEPLOYMENT_OUTPUT" | jq -r '.managedIdentityPrincipalId.value')
-CONTAINER_APP_OUTBOUND_IP=$(echo "$DEPLOYMENT_OUTPUT" | jq -r '.containerAppOutboundIp.value')
-CONTAINER_APP_ENV_NAME=$(echo "$DEPLOYMENT_OUTPUT" | jq -r '.containerAppEnvName.value')
-
-echo "  ✓ Container App deployed"
-echo "  ✓ Outbound IP: $CONTAINER_APP_OUTBOUND_IP"
-echo "  ✓ Managed Identity ID: $MANAGED_IDENTITY_PRINCIPAL_ID"
-
-# Step 3: Deploy Storage Account
-echo "[3/5] Deploying Storage Account with IP whitelist..."
-MY_IP=$(curl -s ifconfig.me)
-
-# Deploy storage account
-az deployment group create \
-  --name "${DEPLOYMENT_NAME}-storage" \
-  --resource-group $RESOURCE_GROUP \
-  --template-file templates/storage-deploy.json \
-  --parameters \
-    storageAccountName=$STORAGE_ACCOUNT_NAME \
-    location=$STORAGE_LOCATION \
-    fileShareName=$FILE_SHARE_NAME \
-    containerAppOutboundIp=$CONTAINER_APP_OUTBOUND_IP \
-    managedIdentityPrincipalId=$MANAGED_IDENTITY_PRINCIPAL_ID \
-    currentUserIp=$MY_IP \
-  --output none
-
-# Wait for storage account to be fully provisioned
-echo "  ⏳ Waiting for storage account to be ready..."
-sleep 5
-
-# Get storage key directly from the storage account instead of deployment output
-STORAGE_KEY=$(az storage account keys list \
-  --resource-group $RESOURCE_GROUP \
-  --account-name $STORAGE_ACCOUNT_NAME \
-  --query '[0].value' -o tsv)
-
-# Verify we got the key
-if [ -z "$STORAGE_KEY" ]; then
-  echo "  ✗ Failed to retrieve storage account key"
-  exit 1
-fi
-
-echo "  ✓ Storage Account deployed"
-echo "  ✓ File share created"
-echo "  ✓ IPs whitelisted: $CONTAINER_APP_OUTBOUND_IP, $MY_IP"
-echo "  ✓ Storage key retrieved"
-
-# Step 4: Configure Environment Storage
-echo "[4/5] Configuring storage in Container Apps environment..."
-az containerapp env storage set \
-  --name $CONTAINER_APP_ENV_NAME \
-  --resource-group $RESOURCE_GROUP \
-  --storage-name appstorage \
-  --azure-file-account-name $STORAGE_ACCOUNT_NAME \
-  --azure-file-account-key "$STORAGE_KEY" \
-  --azure-file-share-name $FILE_SHARE_NAME \
-  --access-mode ReadWrite \
-  --output none
-
-echo "  ✓ Storage configured"
-
-# Step 5: Redeploy Container App with Storage
-echo "[5/5] Redeploying Container App with mounted storage..."
-az deployment group create \
-  --name "${DEPLOYMENT_NAME}-final" \
-  --resource-group $RESOURCE_GROUP \
-  --template-file templates/containerapp-with-storage.json \
-  --parameters \
-    resourceGroupName=$RESOURCE_GROUP \
-    location=$CONTAINERAPP_LOCATION \
-    dockerImage=$DOCKER_IMAGE \
-    storageAccountName=$STORAGE_ACCOUNT_NAME \
-    fileShareName=$FILE_SHARE_NAME \
-  --output none
-
-# Get final URL
-FINAL_URL=$(az deployment group show \
-  --name "${DEPLOYMENT_NAME}-final" \
-  --resource-group $RESOURCE_GROUP \
-  --query 'properties.outputs.containerAppUrl.value' -o tsv)
-
-echo "  ✓ Container App redeployed with storage"
-
-# Save deployment info
-echo "$RESOURCE_GROUP" > .last-deployment
-echo "$CONTAINER_APP_NAME" >> .last-deployment
-echo "$STORAGE_ACCOUNT_NAME" >> .last-deployment
-
-# Verification
-echo ""
-echo "=========================================="
-echo "DEPLOYMENT COMPLETE!"
-echo "=========================================="
-echo "Container App URL: $FINAL_URL"
-echo "Storage Account: $STORAGE_ACCOUNT_NAME"
-echo "File Share: $FILE_SHARE_NAME"
-echo "Mount Path: /mnt/storage"
-echo ""
-echo "To verify the deployment:"
-echo "  ./scripts/verify-deployment.sh $RESOURCE_GROUP"
-echo ""
-echo "To cleanup resources:"
-echo "  ./scripts/cleanup.sh $RESOURCE_GROUP"
+# Run main function
+main "$@"
