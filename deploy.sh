@@ -59,41 +59,28 @@ main() {
         print_message "$YELLOW" "Resource group already exists"
     fi
     
-    # Deploy Container App Environment
-    print_message "$YELLOW" "Deploying Container App Environment..."
-    ENVIRONMENT_OUTPUT=$(az deployment group create \
-        --resource-group "$RESOURCE_GROUP" \
-        --template-file "templates/container-app-env-deploy.json" \
-        --parameters location="$LOCATION" \
-        --query properties.outputs \
-        --output json)
-    
-    ENVIRONMENT_NAME=$(echo "$ENVIRONMENT_OUTPUT" | jq -r '.environmentName.value')
-    ENVIRONMENT_ID=$(echo "$ENVIRONMENT_OUTPUT" | jq -r '.environmentId.value')
-    OUTBOUND_IP=$(echo "$ENVIRONMENT_OUTPUT" | jq -r '.outboundIp.value')
-    
-    print_message "$GREEN" "Container App Environment deployed successfully"
-    echo "  Environment Name: $ENVIRONMENT_NAME"
-    echo "  Outbound IP: $OUTBOUND_IP"
-    
-    # Deploy Container App
-    print_message "$YELLOW" "Deploying Container App..."
+    # Deploy Container App (which includes the environment)
+    print_message "$YELLOW" "Deploying Container App and Environment..."
     APP_OUTPUT=$(az deployment group create \
         --resource-group "$RESOURCE_GROUP" \
         --template-file "templates/container-app-deploy.json" \
         --parameters \
             location="$LOCATION" \
-            environmentId="$ENVIRONMENT_ID" \
         --query properties.outputs \
         --output json)
     
     APP_NAME=$(echo "$APP_OUTPUT" | jq -r '.appName.value')
     APP_URL=$(echo "$APP_OUTPUT" | jq -r '.appUrl.value')
     IDENTITY_ID=$(echo "$APP_OUTPUT" | jq -r '.managedIdentityPrincipalId.value')
+    ENVIRONMENT_NAME=$(echo "$APP_OUTPUT" | jq -r '.environmentName.value')
+    ENVIRONMENT_ID=$(echo "$APP_OUTPUT" | jq -r '.environmentId.value')
+    OUTBOUND_IP=$(echo "$APP_OUTPUT" | jq -r '.outboundIp.value')
     
-    print_message "$GREEN" "Container App deployed successfully"
+    print_message "$GREEN" "Container App and Environment deployed successfully"
     echo "  App Name: $APP_NAME"
     echo "  App URL: $APP_URL"
+    echo "  Environment Name: $ENVIRONMENT_NAME"
+    echo "  Outbound IP: $OUTBOUND_IP"
     
     # Deploy Storage Account
     print_message "$YELLOW" "Deploying Storage Account..."
@@ -123,18 +110,8 @@ main() {
         --query "[0].value" \
         --output tsv)
     
-    # Update Container App with storage mount
-    print_message "$YELLOW" "Updating Container App with storage mount..."
-    az containerapp update \
-        --name "$APP_NAME" \
-        --resource-group "$RESOURCE_GROUP" \
-        --set-env-vars \
-            STORAGE_ACCOUNT_NAME="$STORAGE_ACCOUNT_NAME" \
-            FILE_SHARE_NAME="$FILE_SHARE_NAME" \
-        --query properties.configuration.ingress.fqdn \
-        --output tsv > /dev/null
-    
-    # Create storage mount
+    # Create storage mount in Container App Environment
+    print_message "$YELLOW" "Configuring storage mount in Container App Environment..."
     az containerapp env storage set \
         --name "$ENVIRONMENT_NAME" \
         --resource-group "$RESOURCE_GROUP" \
@@ -145,6 +122,20 @@ main() {
         --access-mode ReadWrite || true
     
     print_message "$GREEN" "Storage mount configured successfully"
+    
+    # Update Container App with storage mount and environment variables
+    print_message "$YELLOW" "Updating Container App with storage mount and environment variables..."
+    az containerapp update \
+        --name "$APP_NAME" \
+        --resource-group "$RESOURCE_GROUP" \
+        --set-env-vars \
+            STORAGE_ACCOUNT_NAME="$STORAGE_ACCOUNT_NAME" \
+            FILE_SHARE_NAME="$FILE_SHARE_NAME" \
+        --volume-mounts "source=appstorage,target=/mnt/data" \
+        --query properties.configuration.ingress.fqdn \
+        --output tsv > /dev/null 2>&1 || true
+    
+    print_message "$GREEN" "Container App updated successfully"
     
     # Deploy Azure DevOps Integration (if template exists)
     if [ -f "templates/devops-integration-deploy.json" ]; then
@@ -165,6 +156,7 @@ main() {
     echo "Container App URL: https://$APP_URL"
     echo "Storage Account: $STORAGE_ACCOUNT_NAME"
     echo "File Share: $FILE_SHARE_NAME"
+    echo "Environment: $ENVIRONMENT_NAME"
     echo ""
     print_message "$YELLOW" "Next steps:"
     echo "1. Access your app at: https://$APP_URL"
