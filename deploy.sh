@@ -46,10 +46,16 @@ main() {
     ENVIRONMENT_LOCATION=${3:-$LOCATION}  # Allow separate environment location
     CURRENT_IP=$(get_current_ip)
     
+    # Default values for Container App
+    DOCKER_IMAGE="${DOCKER_IMAGE:-mcr.microsoft.com/azuredocs/containerapps-helloworld:latest}"
+    APP_NAME_PREFIX="${APP_NAME_PREFIX:-eventsapp}"
+    ENVIRONMENT_NAME_PREFIX="${ENVIRONMENT_NAME_PREFIX:-eventsenv}"
+    
     print_message "$YELLOW" "Configuration:"
     echo "  Resource Group: $RESOURCE_GROUP"
     echo "  Location: $LOCATION"
     echo "  Environment Location: $ENVIRONMENT_LOCATION"
+    echo "  Docker Image: $DOCKER_IMAGE"
     echo "  Current IP: ${CURRENT_IP:-Not detected}"
     
     # Create resource group if it doesn't exist
@@ -61,8 +67,15 @@ main() {
         print_message "$YELLOW" "Resource group already exists"
     fi
     
+    # Generate unique names for resources
+    UNIQUE_SUFFIX=$(date +%s | tail -c 6)
+    APP_NAME="${APP_NAME_PREFIX}-${UNIQUE_SUFFIX}"
+    ENVIRONMENT_NAME="${ENVIRONMENT_NAME_PREFIX}-${UNIQUE_SUFFIX}"
+    
     # Deploy Container App (initial deployment without storage)
     print_message "$YELLOW" "Deploying Container App and Environment..."
+    print_message "$YELLOW" "  App Name: $APP_NAME"
+    print_message "$YELLOW" "  Environment Name: $ENVIRONMENT_NAME"
     
     # First, run the deployment and capture the full output
     DEPLOYMENT_NAME="containerapp-$(date +%s)"
@@ -73,6 +86,9 @@ main() {
         --parameters \
             location="$ENVIRONMENT_LOCATION" \
             resourceGroupName="$RESOURCE_GROUP" \
+            dockerImage="$DOCKER_IMAGE" \
+            appName="$APP_NAME" \
+            environmentName="$ENVIRONMENT_NAME" \
         --output none
     
     # Then query the deployment outputs separately
@@ -107,6 +123,9 @@ main() {
     # Deploy Storage Account
     print_message "$YELLOW" "Deploying Storage Account..."
     
+    # Generate unique storage account name (must be lowercase, no hyphens, max 24 chars)
+    STORAGE_ACCOUNT_NAME="eventstorage${UNIQUE_SUFFIX}"
+    
     # Run storage deployment
     STORAGE_DEPLOYMENT_NAME="storage-$(date +%s)"
     az deployment group create \
@@ -118,6 +137,7 @@ main() {
             containerAppOutboundIp="$OUTBOUND_IP" \
             managedIdentityPrincipalId="$IDENTITY_ID" \
             currentUserIp="${CURRENT_IP}" \
+            storageAccountName="$STORAGE_ACCOUNT_NAME" \
         --output none
     
     # Query storage deployment outputs
@@ -170,6 +190,7 @@ main() {
             storageAccountKey="$STORAGE_KEY" \
             fileShareName="$FILE_SHARE_NAME" \
             appName="$APP_NAME" \
+            dockerImage="$DOCKER_IMAGE" \
         --output none
     
     # Query update deployment outputs
