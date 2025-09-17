@@ -58,7 +58,7 @@
   },
   "variables": {
     "storageAccountName": "[toLower(take(uniqueString(subscription().subscriptionId, resourceGroup().name), 24))]",
-    "ipRules": "[if(empty(parameters('currentUserIp')), array(createObject('value', parameters('containerAppOutboundIp'), 'action', 'Allow')), array(createObject('value', parameters('containerAppOutboundIp'), 'action', 'Allow'), createObject('value', parameters('currentUserIp'), 'action', 'Allow')))]",
+    "ipRules": "[if(empty(parameters('currentUserIp')), createArray(createObject('value', parameters('containerAppOutboundIp'), 'action', 'Allow')), createArray(createObject('value', parameters('containerAppOutboundIp'), 'action', 'Allow'), createObject('value', parameters('currentUserIp'), 'action', 'Allow')))]",
     "storageFileDataSmbShareContributorRoleId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '0c867c2a-1d8c-454a-a3db-ab2ea1bdc8bb')]"
   },
   "resources": [
