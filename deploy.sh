@@ -37,17 +37,19 @@ main() {
     # Check for required parameters
     if [ -z "$1" ]; then
         print_message "$RED" "Error: Resource group name is required"
-        echo "Usage: $0 <resource-group-name> [location]"
+        echo "Usage: $0 <resource-group-name> [location] [environment-location]"
         exit 1
     fi
     
     RESOURCE_GROUP=$1
     LOCATION=${2:-"eastus"}
+    ENVIRONMENT_LOCATION=${3:-$LOCATION}  # Allow separate environment location
     CURRENT_IP=$(get_current_ip)
     
     print_message "$YELLOW" "Configuration:"
     echo "  Resource Group: $RESOURCE_GROUP"
     echo "  Location: $LOCATION"
+    echo "  Environment Location: $ENVIRONMENT_LOCATION"
     echo "  Current IP: ${CURRENT_IP:-Not detected}"
     
     # Create resource group if it doesn't exist
@@ -68,7 +70,9 @@ main() {
         --name "$DEPLOYMENT_NAME" \
         --resource-group "$RESOURCE_GROUP" \
         --template-file "templates/containerapp-deploy.json" \
-        --parameters location="$LOCATION" \
+        --parameters \
+            location="$ENVIRONMENT_LOCATION" \
+            resourceGroupName="$RESOURCE_GROUP" \
         --output none
     
     # Then query the deployment outputs separately
@@ -110,7 +114,7 @@ main() {
         --resource-group "$RESOURCE_GROUP" \
         --template-file "templates/storage-deploy.json" \
         --parameters \
-            location="$LOCATION" \
+            location="$ENVIRONMENT_LOCATION" \
             containerAppOutboundIp="$OUTBOUND_IP" \
             managedIdentityPrincipalId="$IDENTITY_ID" \
             currentUserIp="${CURRENT_IP}" \
@@ -160,7 +164,7 @@ main() {
         --resource-group "$RESOURCE_GROUP" \
         --template-file "templates/containerapp-with-storage.json" \
         --parameters \
-            location="$LOCATION" \
+            location="$ENVIRONMENT_LOCATION" \
             environmentId="$ENVIRONMENT_ID" \
             storageAccountName="$STORAGE_ACCOUNT_NAME" \
             storageAccountKey="$STORAGE_KEY" \
@@ -208,7 +212,7 @@ main() {
             --resource-group "$RESOURCE_GROUP" \
             --template-file "templates/devops-integration-deploy.json" \
             --parameters \
-                location="$LOCATION" \
+                location="$ENVIRONMENT_LOCATION" \
                 containerAppName="$APP_NAME" \
                 storageAccountName="$STORAGE_ACCOUNT_NAME" \
             --output none
