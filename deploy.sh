@@ -59,11 +59,11 @@ main() {
         print_message "$YELLOW" "Resource group already exists"
     fi
     
-    # Deploy Container App (which includes the environment)
+    # Deploy Container App (initial deployment without storage)
     print_message "$YELLOW" "Deploying Container App and Environment..."
     APP_OUTPUT=$(az deployment group create \
         --resource-group "$RESOURCE_GROUP" \
-        --template-file "templates/container-app-deploy.json" \
+        --template-file "templates/containerapp-deploy.json" \
         --parameters \
             location="$LOCATION" \
         --query properties.outputs \
@@ -110,32 +110,41 @@ main() {
         --query "[0].value" \
         --output tsv)
     
-    # Create storage mount in Container App Environment
-    print_message "$YELLOW" "Configuring storage mount in Container App Environment..."
-    az containerapp env storage set \
-        --name "$ENVIRONMENT_NAME" \
+    # Update Container App with storage configuration using the containerapp-with-storage template
+    print_message "$YELLOW" "Updating Container App with storage configuration..."
+    UPDATE_OUTPUT=$(az deployment group create \
         --resource-group "$RESOURCE_GROUP" \
-        --storage-name "appstorage" \
-        --azure-file-account-name "$STORAGE_ACCOUNT_NAME" \
-        --azure-file-account-key "$STORAGE_KEY" \
-        --azure-file-share-name "$FILE_SHARE_NAME" \
-        --access-mode ReadWrite || true
+        --template-file "templates/containerapp-with-storage.json" \
+        --parameters \
+            location="$LOCATION" \
+            environmentId="$ENVIRONMENT_ID" \
+            storageAccountName="$STORAGE_ACCOUNT_NAME" \
+            storageAccountKey="$STORAGE_KEY" \
+            fileShareName="$FILE_SHARE_NAME" \
+            appName="$APP_NAME" \
+        --query properties.outputs \
+        --output json)
     
-    print_message "$GREEN" "Storage mount configured successfully"
+    # Extract updated values if needed
+    if [ ! -z "$UPDATE_OUTPUT" ]; then
+        UPDATED_APP_URL=$(echo "$UPDATE_OUTPUT" | jq -r '.appUrl.value' 2>/dev/null || echo "$APP_URL")
+    else
+        UPDATED_APP_URL="$APP_URL"
+    fi
     
-    # Update Container App with storage mount and environment variables
-    print_message "$YELLOW" "Updating Container App with storage mount and environment variables..."
+    print_message "$GREEN" "Container App updated with storage mount successfully"
+    
+    # Set environment variables on the Container App
+    print_message "$YELLOW" "Setting environment variables on Container App..."
     az containerapp update \
         --name "$APP_NAME" \
         --resource-group "$RESOURCE_GROUP" \
         --set-env-vars \
             STORAGE_ACCOUNT_NAME="$STORAGE_ACCOUNT_NAME" \
             FILE_SHARE_NAME="$FILE_SHARE_NAME" \
-        --volume-mounts "source=appstorage,target=/mnt/data" \
-        --query properties.configuration.ingress.fqdn \
-        --output tsv > /dev/null 2>&1 || true
+        --output none 2>/dev/null || true
     
-    print_message "$GREEN" "Container App updated successfully"
+    print_message "$GREEN" "Environment variables configured successfully"
     
     # Deploy Azure DevOps Integration (if template exists)
     if [ -f "templates/devops-integration-deploy.json" ]; then
@@ -146,22 +155,26 @@ main() {
             --parameters \
                 location="$LOCATION" \
                 containerAppName="$APP_NAME" \
-                storageAccountName="$STORAGE_ACCOUNT_NAME"
+                storageAccountName="$STORAGE_ACCOUNT_NAME" \
+            --output none
         print_message "$GREEN" "Azure DevOps Integration deployed successfully"
     fi
     
     # Final summary
     print_message "$GREEN" "\n=== Deployment Complete ==="
     echo "Resource Group: $RESOURCE_GROUP"
-    echo "Container App URL: https://$APP_URL"
+    echo "Container App URL: https://$UPDATED_APP_URL"
     echo "Storage Account: $STORAGE_ACCOUNT_NAME"
     echo "File Share: $FILE_SHARE_NAME"
     echo "Environment: $ENVIRONMENT_NAME"
     echo ""
     print_message "$YELLOW" "Next steps:"
-    echo "1. Access your app at: https://$APP_URL"
+    echo "1. Access your app at: https://$UPDATED_APP_URL"
     echo "2. Configure Azure DevOps webhooks to point to your app"
     echo "3. Monitor logs in the $FILE_SHARE_NAME file share"
+    echo ""
+    print_message "$YELLOW" "To view logs:"
+    echo "az containerapp logs show --name $APP_NAME --resource-group $RESOURCE_GROUP --follow"
 }
 
 # Run main function
