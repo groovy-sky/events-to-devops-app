@@ -61,20 +61,38 @@ main() {
     
     # Deploy Container App (initial deployment without storage)
     print_message "$YELLOW" "Deploying Container App and Environment..."
-    APP_OUTPUT=$(az deployment group create \
+    
+    # First, run the deployment and capture the full output
+    DEPLOYMENT_NAME="containerapp-$(date +%s)"
+    az deployment group create \
+        --name "$DEPLOYMENT_NAME" \
         --resource-group "$RESOURCE_GROUP" \
         --template-file "templates/containerapp-deploy.json" \
-        --parameters \
-            location="$LOCATION" \
+        --parameters location="$LOCATION" \
+        --output none
+    
+    # Then query the deployment outputs separately
+    APP_OUTPUT=$(az deployment group show \
+        --name "$DEPLOYMENT_NAME" \
+        --resource-group "$RESOURCE_GROUP" \
         --query properties.outputs \
         --output json)
     
-    APP_NAME=$(echo "$APP_OUTPUT" | jq -r '.appName.value')
-    APP_URL=$(echo "$APP_OUTPUT" | jq -r '.appUrl.value')
-    IDENTITY_ID=$(echo "$APP_OUTPUT" | jq -r '.managedIdentityPrincipalId.value')
-    ENVIRONMENT_NAME=$(echo "$APP_OUTPUT" | jq -r '.environmentName.value')
-    ENVIRONMENT_ID=$(echo "$APP_OUTPUT" | jq -r '.environmentId.value')
-    OUTBOUND_IP=$(echo "$APP_OUTPUT" | jq -r '.outboundIp.value')
+    # Parse the outputs
+    APP_NAME=$(echo "$APP_OUTPUT" | jq -r '.appName.value // empty')
+    APP_URL=$(echo "$APP_OUTPUT" | jq -r '.appUrl.value // empty')
+    IDENTITY_ID=$(echo "$APP_OUTPUT" | jq -r '.managedIdentityPrincipalId.value // empty')
+    ENVIRONMENT_NAME=$(echo "$APP_OUTPUT" | jq -r '.environmentName.value // empty')
+    ENVIRONMENT_ID=$(echo "$APP_OUTPUT" | jq -r '.environmentId.value // empty')
+    OUTBOUND_IP=$(echo "$APP_OUTPUT" | jq -r '.outboundIp.value // empty')
+    
+    # Validate required outputs
+    if [ -z "$APP_NAME" ] || [ -z "$ENVIRONMENT_ID" ]; then
+        print_message "$RED" "Error: Failed to get required outputs from Container App deployment"
+        echo "Deployment outputs:"
+        echo "$APP_OUTPUT"
+        exit 1
+    fi
     
     print_message "$GREEN" "Container App and Environment deployed successfully"
     echo "  App Name: $APP_NAME"
@@ -84,7 +102,11 @@ main() {
     
     # Deploy Storage Account
     print_message "$YELLOW" "Deploying Storage Account..."
-    STORAGE_OUTPUT=$(az deployment group create \
+    
+    # Run storage deployment
+    STORAGE_DEPLOYMENT_NAME="storage-$(date +%s)"
+    az deployment group create \
+        --name "$STORAGE_DEPLOYMENT_NAME" \
         --resource-group "$RESOURCE_GROUP" \
         --template-file "templates/storage-deploy.json" \
         --parameters \
@@ -92,11 +114,25 @@ main() {
             containerAppOutboundIp="$OUTBOUND_IP" \
             managedIdentityPrincipalId="$IDENTITY_ID" \
             currentUserIp="${CURRENT_IP}" \
+        --output none
+    
+    # Query storage deployment outputs
+    STORAGE_OUTPUT=$(az deployment group show \
+        --name "$STORAGE_DEPLOYMENT_NAME" \
+        --resource-group "$RESOURCE_GROUP" \
         --query properties.outputs \
         --output json)
     
-    STORAGE_ACCOUNT_NAME=$(echo "$STORAGE_OUTPUT" | jq -r '.storageAccountName.value')
-    FILE_SHARE_NAME=$(echo "$STORAGE_OUTPUT" | jq -r '.fileShareName.value')
+    STORAGE_ACCOUNT_NAME=$(echo "$STORAGE_OUTPUT" | jq -r '.storageAccountName.value // empty')
+    FILE_SHARE_NAME=$(echo "$STORAGE_OUTPUT" | jq -r '.fileShareName.value // empty')
+    
+    # Validate storage outputs
+    if [ -z "$STORAGE_ACCOUNT_NAME" ] || [ -z "$FILE_SHARE_NAME" ]; then
+        print_message "$RED" "Error: Failed to get required outputs from Storage deployment"
+        echo "Storage outputs:"
+        echo "$STORAGE_OUTPUT"
+        exit 1
+    fi
     
     print_message "$GREEN" "Storage Account deployed successfully"
     echo "  Storage Account Name: $STORAGE_ACCOUNT_NAME"
@@ -110,9 +146,17 @@ main() {
         --query "[0].value" \
         --output tsv)
     
+    if [ -z "$STORAGE_KEY" ]; then
+        print_message "$RED" "Error: Failed to retrieve storage account key"
+        exit 1
+    fi
+    
     # Update Container App with storage configuration using the containerapp-with-storage template
     print_message "$YELLOW" "Updating Container App with storage configuration..."
-    UPDATE_OUTPUT=$(az deployment group create \
+    
+    UPDATE_DEPLOYMENT_NAME="update-$(date +%s)"
+    az deployment group create \
+        --name "$UPDATE_DEPLOYMENT_NAME" \
         --resource-group "$RESOURCE_GROUP" \
         --template-file "templates/containerapp-with-storage.json" \
         --parameters \
@@ -122,12 +166,21 @@ main() {
             storageAccountKey="$STORAGE_KEY" \
             fileShareName="$FILE_SHARE_NAME" \
             appName="$APP_NAME" \
-        --query properties.outputs \
-        --output json)
+        --output none
     
-    # Extract updated values if needed
-    if [ ! -z "$UPDATE_OUTPUT" ]; then
-        UPDATED_APP_URL=$(echo "$UPDATE_OUTPUT" | jq -r '.appUrl.value' 2>/dev/null || echo "$APP_URL")
+    # Query update deployment outputs
+    UPDATE_OUTPUT=$(az deployment group show \
+        --name "$UPDATE_DEPLOYMENT_NAME" \
+        --resource-group "$RESOURCE_GROUP" \
+        --query properties.outputs \
+        --output json 2>/dev/null || echo "{}")
+    
+    # Extract updated values if available
+    if [ ! -z "$UPDATE_OUTPUT" ] && [ "$UPDATE_OUTPUT" != "{}" ]; then
+        UPDATED_APP_URL=$(echo "$UPDATE_OUTPUT" | jq -r '.appUrl.value // empty')
+        if [ -z "$UPDATED_APP_URL" ]; then
+            UPDATED_APP_URL="$APP_URL"
+        fi
     else
         UPDATED_APP_URL="$APP_URL"
     fi
@@ -142,9 +195,11 @@ main() {
         --set-env-vars \
             STORAGE_ACCOUNT_NAME="$STORAGE_ACCOUNT_NAME" \
             FILE_SHARE_NAME="$FILE_SHARE_NAME" \
-        --output none 2>/dev/null || true
+        --output none 2>/dev/null || {
+            print_message "$YELLOW" "Warning: Could not set environment variables (may already be set)"
+        }
     
-    print_message "$GREEN" "Environment variables configured successfully"
+    print_message "$GREEN" "Environment variables configured"
     
     # Deploy Azure DevOps Integration (if template exists)
     if [ -f "templates/devops-integration-deploy.json" ]; then
