@@ -48,8 +48,6 @@ main() {
     
     # Default values for Container App
     DOCKER_IMAGE="${DOCKER_IMAGE:-mcr.microsoft.com/azuredocs/containerapps-helloworld:latest}"
-    APP_NAME_PREFIX="${APP_NAME_PREFIX:-eventsapp}"
-    ENVIRONMENT_NAME_PREFIX="${ENVIRONMENT_NAME_PREFIX:-eventsenv}"
     
     print_message "$YELLOW" "Configuration:"
     echo "  Resource Group: $RESOURCE_GROUP"
@@ -67,18 +65,14 @@ main() {
         print_message "$YELLOW" "Resource group already exists"
     fi
     
-    # Generate unique names for resources
-    UNIQUE_SUFFIX=$(date +%s | tail -c 6)
-    APP_NAME="${APP_NAME_PREFIX}-${UNIQUE_SUFFIX}"
-    ENVIRONMENT_NAME="${ENVIRONMENT_NAME_PREFIX}-${UNIQUE_SUFFIX}"
-    
     # Deploy Container App (initial deployment without storage)
     print_message "$YELLOW" "Deploying Container App and Environment..."
-    print_message "$YELLOW" "  App Name: $APP_NAME"
-    print_message "$YELLOW" "  Environment Name: $ENVIRONMENT_NAME"
     
     # First, run the deployment and capture the full output
+    # The template only accepts: currentTime, dockerImage, location, resourceGroupName
     DEPLOYMENT_NAME="containerapp-$(date +%s)"
+    CURRENT_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+    
     az deployment group create \
         --name "$DEPLOYMENT_NAME" \
         --resource-group "$RESOURCE_GROUP" \
@@ -87,8 +81,7 @@ main() {
             location="$ENVIRONMENT_LOCATION" \
             resourceGroupName="$RESOURCE_GROUP" \
             dockerImage="$DOCKER_IMAGE" \
-            appName="$APP_NAME" \
-            environmentName="$ENVIRONMENT_NAME" \
+            currentTime="$CURRENT_TIME" \
         --output none
     
     # Then query the deployment outputs separately
@@ -124,6 +117,7 @@ main() {
     print_message "$YELLOW" "Deploying Storage Account..."
     
     # Generate unique storage account name (must be lowercase, no hyphens, max 24 chars)
+    UNIQUE_SUFFIX=$(date +%s | tail -c 6)
     STORAGE_ACCOUNT_NAME="eventstorage${UNIQUE_SUFFIX}"
     
     # Run storage deployment
